@@ -11,6 +11,10 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <netplan/parse.h>
+#include <netplan/parse-nm.h>
+#include <netplan/util.h>
+#include <netplan/netplan.h>
 
 #include "libnm-core-intern/nm-keyfile-internal.h"
 
@@ -201,6 +205,7 @@ _internal_write_connection(NMConnection                   *connection,
                            char                          **out_path,
                            NMConnection                  **out_reread,
                            gboolean                       *out_reread_same,
+                           const char *rootdir,
                            GError                        **error)
 {
     nm_auto_unref_keyfile GKeyFile *kf_file        = NULL;
@@ -409,6 +414,113 @@ _internal_write_connection(NMConnection                   *connection,
     if (existing_path && !existing_path_read_only && !nm_streq(path, existing_path))
         unlink(existing_path);
 
+    /* NETPLAN: write only non-volatile files to /etc/netplan/... */
+    if (!is_volatile) {
+        g_autofree gchar* ssid = g_key_file_get_string(kf_file, "wifi", "ssid", NULL);
+        g_autofree gchar* escaped_ssid = ssid ?
+                                         g_uri_escape_string(ssid, NULL, TRUE) : NULL;
+        g_autofree gchar* netplan_id = (existing_path && strstr(existing_path, "system-connections/netplan-")) ?
+                                       netplan_get_id_from_nm_filename(existing_path, ssid) : NULL;
+        netplan_clear_netdefs();
+
+        const gchar* kf_path = path;
+        if (netplan_id && existing_path) {
+            GFile* from = g_file_new_for_path(path);
+            GFile* to = g_file_new_for_path(existing_path);
+            g_file_copy(from, to, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
+            kf_path = existing_path;
+        }
+        // push keyfile into libnetplan for parsing (using existing_path, if available,
+        // to be able to extract the original netdef_id and override existing settings)
+        if (!netplan_parse_keyfile(kf_path, &local_err)) {
+            g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
+                         "netplan: YAML translation failed");
+            return FALSE;
+        }
+        gpointer netdef_id, netplan_connection;
+        GHashTableIter iter;
+        GHashTable* netdefs = netplan_finish_parse(&local_err); // get map of netdefs, contains only one connection here
+        g_hash_table_iter_init (&iter, netdefs);
+        g_hash_table_iter_next (&iter, &netdef_id, &netplan_connection); // get first (and only) netdef from map
+        write_netplan_conf(netplan_connection, rootdir); // write netdef to YAML
+
+        /* Delete same connection-profile provided by legacy netplan plugin */
+        g_autofree gchar* legacy_path = NULL;
+        legacy_path = g_strdup_printf("/etc/netplan/NM-%s.yaml", nm_connection_get_uuid (connection));
+        if (g_file_test(legacy_path, G_FILE_TEST_EXISTS | G_FILE_TEST_IS_REGULAR)) {
+            g_debug("Deleting legacy netplan connection: %s", legacy_path);
+            unlink(legacy_path);
+        }
+
+        /* Clear original keyfile in /etc/NetworkManager/system-connections/,
+         * we've written the /etc/netplan/*.yaml file instead. */
+        unlink(path);
+        if (!generate_netplan(rootdir)) {
+            g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
+                         "netplan generate failed");
+            return FALSE;
+        }
+        _fix_netplan_interface_name(rootdir);
+        //XXX: path should be provided by netplan eventually
+        g_free(path);
+        if (existing_path) {
+            // This is an update of an existing connection
+            path = g_strdup(existing_path);
+        } else {
+            // This will add a new connection
+            if (escaped_ssid)
+                path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-NM-%s-%s.nmconnection",
+                                       rootdir ?: "", nm_connection_get_uuid (connection), escaped_ssid);
+            else
+                path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-NM-%s.nmconnection",
+                                       rootdir ?: "", nm_connection_get_uuid (connection));
+
+            // Since netplan v0.103 logical interfaces (bridge/bond/vlan/...) use the interface name as ID
+            if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
+                g_free(path);
+                if (escaped_ssid)
+                    path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-%s-%s.nmconnection",
+                                           rootdir ?: "", (char *)netdef_id, escaped_ssid);
+                else
+                    path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-%s.nmconnection",
+                                           rootdir ?: "", (char *)netdef_id);
+            }
+        }
+        netplan_clear_netdefs();
+
+        /* re-read again: this time the connection profile newly generated by netplan in /run/... */
+        if (   out_reread
+            || out_reread_same) {
+            gs_free_error GError *reread_error = NULL;
+
+            //XXX: why does the _from_keyfile function behave differently?
+            //reread = nms_keyfile_reader_from_keyfile (kf_file, path, NULL, profile_dir, FALSE, &reread_error);
+            reread = nms_keyfile_reader_from_file (path, profile_dir, NULL, NULL, NULL, NULL, NULL, NULL, &reread_error);
+
+            if (   !reread
+                || !nm_connection_normalize (reread, NULL, NULL, &reread_error)) {
+                nm_log_err (LOGD_SETTINGS, "BUG: the profile cannot be stored in keyfile format without becoming unusable: %s", reread_error->message);
+                g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
+                             "keyfile writer produces an invalid connection: %s",
+                             reread_error->message);
+                nm_assert_not_reached ();
+                return FALSE;
+            }
+
+            if (out_reread_same) {
+                reread_same = !!nm_connection_compare (reread, connection, NM_SETTING_COMPARE_FLAG_EXACT);
+
+                nm_assert (reread_same == nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT));
+                nm_assert (reread_same == ({
+                                                gs_unref_hashtable GHashTable *_settings = NULL;
+
+                                                (   nm_connection_diff (reread, connection, NM_SETTING_COMPARE_FLAG_EXACT, &_settings)
+                                                 && !_settings);
+                                           }));
+            }
+        }
+    }
+
     NM_SET_OUT(out_reread, g_steal_pointer(&reread));
     NM_SET_OUT(out_reread_same, reread_same);
     NM_SET_OUT(out_path, g_steal_pointer(&path));
@@ -454,6 +566,7 @@ nms_keyfile_writer_connection(NMConnection                   *connection,
                                       out_path,
                                       out_reread,
                                       out_reread_same,
+                                      NULL,
                                       error);
 }
 
@@ -467,6 +580,10 @@ nms_keyfile_writer_test_connection(NMConnection  *connection,
                                    gboolean      *out_reread_same,
                                    GError       **error)
 {
+    gchar *rootdir = g_strdup(keyfile_dir);
+    if (g_str_has_suffix (keyfile_dir, "/run/NetworkManager/system-connections")) {
+        rootdir[strlen(rootdir)-38] = '\0'; /* 38 = strlen("/run/NetworkManager/...") */
+    }
     return _internal_write_connection(connection,
                                       FALSE,
                                       FALSE,
@@ -486,5 +603,6 @@ nms_keyfile_writer_test_connection(NMConnection  *connection,
                                       out_path,
                                       out_reread,
                                       out_reread_same,
+                                      rootdir,
                                       error);
 }

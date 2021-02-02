@@ -269,6 +269,9 @@ test-*.trs
 /src/core/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh
 /src/core/settings/plugins/ifupdown/tests/test-ifupdown
 /src/core/settings/plugins/keyfile/tests/test-keyfile-settings
+/src/core/settings/plugins/keyfile/tests/keyfiles/etc
+/src/core/settings/plugins/keyfile/tests/keyfiles/run
+/src/core/settings/plugins/keyfile/tests/keyfiles/netplan-*
 /src/core/settings/plugins/ifcfg-rh/tests/network-scripts/tmp/
 /src/core/supplicant/tests/test-supplicant-config
 /src/core/tests/config/test-config
