@@ -24,8 +24,10 @@
 
 #include "nm-test-utils-core.h"
 
-#define TEST_KEYFILES_DIR NM_BUILD_SRCDIR "/src/core/settings/plugins/keyfile/tests/keyfiles"
-#define TEST_SCRATCH_DIR  NM_BUILD_BUILDDIR "/src/core/settings/plugins/keyfile/tests/keyfiles"
+#define TEST_KEYFILES_DIR_OLD   NM_BUILD_SRCDIR"/src/core/settings/plugins/keyfile/tests/keyfiles"
+#define TEST_SCRATCH_DIR_OLD    NM_BUILD_BUILDDIR"/src/core/settings/plugins/keyfile/tests/keyfiles"
+#define TEST_KEYFILES_DIR       TEST_KEYFILES_DIR_OLD"/run/NetworkManager/system-connections"
+#define TEST_SCRATCH_DIR        TEST_SCRATCH_DIR_OLD"/run/NetworkManager/system-connections"
 
 /*****************************************************************************/
 
@@ -113,6 +115,9 @@ assert_reread_and_unlink(NMConnection *connection,
 static void
 assert_reread_same(NMConnection *connection, NMConnection *reread)
 {
+    // Netplan does some normalization already, so compare normalized connections
+    nm_connection_normalize (connection, NULL, NULL, NULL);
+    nm_connection_normalize (reread, NULL, NULL, NULL);
     nmtst_assert_connection_verifies_without_normalization(reread);
     nmtst_assert_connection_equals(connection, TRUE, reread, FALSE);
 }
@@ -787,6 +792,8 @@ test_write_wireless_connection(void)
                  bssid,
                  NM_SETTING_WIRELESS_SSID,
                  ssid,
+                 //XXX: netplan uses explicit "infrastructure" mode
+                 NM_SETTING_WIRELESS_MODE, NM_SETTING_WIRELESS_MODE_INFRA,
                  NM_SETTING_WIRED_MTU,
                  1000,
                  NULL);
@@ -868,7 +875,10 @@ test_write_string_ssid(void)
     nm_connection_add_setting(connection, NM_SETTING(s_wireless));
 
     ssid = g_bytes_new(tmpssid, sizeof(tmpssid));
-    g_object_set(s_wireless, NM_SETTING_WIRELESS_SSID, ssid, NULL);
+    g_object_set(s_wireless, NM_SETTING_WIRELESS_SSID, ssid,
+                 //XXX: netplan uses explicit "infrastructure" mode
+                 NM_SETTING_WIRELESS_MODE, NM_SETTING_WIRELESS_MODE_INFRA,
+                 NULL);
     g_bytes_unref(ssid);
 
     /* IP4 setting */
@@ -951,7 +961,10 @@ test_write_intlist_ssid(void)
     nm_connection_add_setting(connection, NM_SETTING(s_wifi));
 
     ssid = g_bytes_new(tmpssid, sizeof(tmpssid));
-    g_object_set(s_wifi, NM_SETTING_WIRELESS_SSID, ssid, NULL);
+    g_object_set(s_wifi, NM_SETTING_WIRELESS_SSID, ssid,
+                 //XXX: netplan uses explicit "infrastructure" mode
+                 NM_SETTING_WIRELESS_MODE, NM_SETTING_WIRELESS_MODE_INFRA,
+                 NULL);
     g_bytes_unref(ssid);
 
     /* IP4 setting */
@@ -1051,7 +1064,10 @@ test_write_intlike_ssid(void)
     nm_connection_add_setting(connection, NM_SETTING(s_wifi));
 
     ssid = g_bytes_new(tmpssid, sizeof(tmpssid));
-    g_object_set(s_wifi, NM_SETTING_WIRELESS_SSID, ssid, NULL);
+    g_object_set(s_wifi, NM_SETTING_WIRELESS_SSID, ssid,
+                 //XXX: netplan uses explicit "infrastructure" mode
+                 NM_SETTING_WIRELESS_MODE, NM_SETTING_WIRELESS_MODE_INFRA,
+                 NULL);
     g_bytes_unref(ssid);
 
     /* IP4 setting */
@@ -1113,7 +1129,10 @@ test_write_intlike_ssid_2(void)
     nm_connection_add_setting(connection, NM_SETTING(s_wifi));
 
     ssid = g_bytes_new(tmpssid, sizeof(tmpssid));
-    g_object_set(s_wifi, NM_SETTING_WIRELESS_SSID, ssid, NULL);
+    g_object_set(s_wifi, NM_SETTING_WIRELESS_SSID, ssid,
+                 //XXX: netplan uses explicit "infrastructure" mode
+                 NM_SETTING_WIRELESS_MODE, NM_SETTING_WIRELESS_MODE_INFRA,
+                 NULL);
     g_bytes_unref(ssid);
 
     /* IP4 setting */
@@ -2843,12 +2862,20 @@ main(int argc, char **argv)
 
     nmtst_init_assert_logging(&argc, &argv, "INFO", "DEFAULT");
 
-    if (g_mkdir_with_parents(TEST_SCRATCH_DIR, 0755) != 0) {
+    if (g_mkdir_with_parents(TEST_SCRATCH_DIR_OLD, 0755) != 0) {
         errsv = errno;
         g_error("failure to create test directory \"%s\": %s",
-                TEST_SCRATCH_DIR,
+                TEST_SCRATCH_DIR_OLD,
                 nm_strerror_native(errsv));
     }
+    // Prepare netplan test directories
+    g_mkdir_with_parents (TEST_SCRATCH_DIR_OLD"/etc/netplan", 0755);
+    g_mkdir_with_parents (TEST_SCRATCH_DIR_OLD"/run/NetworkManager", 0755);
+    // link "keyfiles/" to "run/NetworkManager/system-connections"
+    const gchar *args[] = { "/bin/ln", "-s", TEST_KEYFILES_DIR_OLD, TEST_KEYFILES_DIR, NULL };
+    g_spawn_sync(NULL, (gchar**)args, NULL, G_SPAWN_DEFAULT, NULL, NULL, NULL, NULL, NULL, NULL);
+    // clear netplan YAML config from previous runs
+    g_spawn_command_line_sync("/bin/sh -c 'rm " TEST_KEYFILES_DIR_OLD "/etc/netplan/*.yaml'", NULL, NULL, NULL, NULL);
 
     /* The tests */
     g_test_add_func("/keyfile/test_read_valid_wired_connection", test_read_valid_wired_connection);

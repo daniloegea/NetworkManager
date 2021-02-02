@@ -58,6 +58,8 @@ int nms_keyfile_nmmeta_write(const char *dirname,
 
 /*****************************************************************************/
 
+gboolean _fix_netplan_interface_name(const char* rootdir);
+
 struct stat;
 gboolean nms_keyfile_utils_check_file_permissions_stat(NMSKeyfileFiletype filetype,
                                                        const struct stat *st,
@@ -67,5 +69,7 @@ gboolean nms_keyfile_utils_check_file_permissions(NMSKeyfileFiletype filetype,
                                                   const char        *filename,
                                                   struct stat       *out_st,
                                                   GError           **error);
+
+gboolean generate_netplan(const char* rootdir);
 
 #endif /* __NMS_KEYFILE_UTILS_H__ */
