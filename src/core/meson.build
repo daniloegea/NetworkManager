@@ -70,7 +70,7 @@ nm_deps = [
   libndp_dep,
   libudev_dep,
   logind_dep,
-  libuuid_dep,
+  uuid_dep,
   libnetplan_dep,
 ]
 
