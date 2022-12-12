@@ -428,6 +428,9 @@ _internal_write_connection(NMConnection                   *connection,
         if (existing_path && strstr(existing_path, "system-connections/netplan-")) {
             netplan_id = g_malloc0(strlen(existing_path));
             netplan_id_size = netplan_get_id_from_nm_filepath(existing_path, ssid, netplan_id, strlen(existing_path) - 1);
+        } else {
+            const char* con_uuid = nm_connection_get_uuid(connection);
+            netplan_id = g_strdup_printf("NM-%s", con_uuid);
         }
 
         const gchar* kf_path = path;
@@ -447,11 +450,14 @@ _internal_write_connection(NMConnection                   *connection,
             netplan_parser_clear(&npp);
             return FALSE;
         }
+
         np_state = netplan_state_new();
         netplan_state_import_parser_results(np_state, npp, &local_err);
         netdef_id = netplan_state_get_netdef(np_state, netplan_id);
         netplan_netdef_write_yaml(np_state, netdef_id, rootdir, &local_err);
+
         netplan_state_clear(&np_state);
+        netplan_parser_clear(&npp);
 
         /* Delete same connection-profile provided by legacy netplan plugin */
         g_autofree gchar* legacy_path = NULL;
