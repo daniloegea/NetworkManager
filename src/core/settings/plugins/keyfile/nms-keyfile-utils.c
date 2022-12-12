@@ -37,6 +37,7 @@ _fix_netplan_interface_name(const char* rootdir)
     mode_t orig_umask;
     int rc;
     g_autofree char* path = NULL;
+    gchar *iface = NULL;
     path = g_build_path(G_DIR_SEPARATOR_S, rootdir ?: "/", "run",
                         "NetworkManager", "system-connections", NULL);
     g_autofree char* rglob = g_strjoin(NULL, path, G_DIR_SEPARATOR_S,
@@ -50,13 +51,13 @@ _fix_netplan_interface_name(const char* rootdir)
     for (size_t i = 0; i < gl.gl_pathc; ++i) {
         GKeyFile *kf = g_key_file_new ();
         g_key_file_load_from_file (kf, gl.gl_pathv[i], G_KEY_FILE_KEEP_COMMENTS, NULL);
-        gchar *iface = NULL;
         iface = g_key_file_get_string (kf, "connection", "interface-name", NULL);
         if (iface && g_str_has_prefix (iface, "NM-") && strlen (iface) > 15) {
             g_key_file_remove_key (kf, "connection", "interface-name", NULL);
             orig_umask = umask(077);
             if (!g_key_file_save_to_file (kf, gl.gl_pathv[i], NULL)) {
                 g_warning ("failed to write updated keyfile %s", gl.gl_pathv[i]);
+                globfree(&gl);
                 return FALSE;
             }
             g_info("netplan: deleted invalid connection.interface-name=%s in %s",
@@ -66,6 +67,7 @@ _fix_netplan_interface_name(const char* rootdir)
         g_free (iface);
         g_key_file_free (kf);
     }
+    globfree(&gl);
     return TRUE;
 }
 
@@ -439,20 +441,4 @@ nms_keyfile_utils_check_file_permissions(NMSKeyfileFiletype filetype,
 
     NM_SET_OUT(out_st, st);
     return TRUE;
-}
-
-gboolean
-generate_netplan(const char* rootdir)
-{
-    /* TODO: call the io.netplan.Netplan.Generate() DBus method directly, after
-     * finding a way to pass the --root-dir parameter via DBus, to make it work
-     * inside NM's unit-tests where netplan needs to read & generate outside of
-     * /etc/netplan and /run/{systemd,NetworkManager} */
-    const gchar *argv[] = { "netplan", "generate", NULL , NULL, NULL };
-    if (rootdir) {
-        argv[2] = "--root-dir";
-        argv[3] = rootdir;
-    }
-    return g_spawn_sync(NULL, (gchar**)argv, NULL, G_SPAWN_SEARCH_PATH,
-                        NULL, NULL, NULL, NULL, NULL, NULL);
 }
