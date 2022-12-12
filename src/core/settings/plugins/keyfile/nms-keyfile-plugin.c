@@ -589,7 +589,7 @@ reload_connections(NMSettingsPlugin                      *plugin,
         NM_SETT_UTIL_STORAGES_INIT(storages_new, nms_keyfile_storage_destroy);
     int i;
 
-    generate_netplan(NULL);
+    netplan_generate(NULL);
     _fix_netplan_interface_name(NULL);
     _load_dir(self, NMS_KEYFILE_STORAGE_TYPE_RUN, priv->dirname_run, &storages_new);
     if (priv->dirname_etc)
@@ -1008,6 +1008,8 @@ delete_connection(NMSettingsPlugin *plugin, NMSettingsStorage *storage_x, GError
     const char                        *previous_filename;
     const char                        *uuid;
     gboolean                           success = TRUE;
+    g_autofree gchar                  *netplan_id = NULL;
+    ssize_t                            netplan_id_size = 0;
 
     _nm_assert_storage(self, storage, TRUE);
     nm_assert(!error || !*error);
@@ -1047,11 +1049,13 @@ delete_connection(NMSettingsPlugin *plugin, NMSettingsStorage *storage_x, GError
     } else
         operation_message = "deleted from disk";
 
-    g_autofree gchar* netplan_id = netplan_get_id_from_nm_filename(previous_filename, ssid);
-    if (netplan_id) {
+
+    netplan_id = g_malloc0(strlen(previous_filename));
+    netplan_id_size = netplan_get_id_from_nm_filepath(previous_filename, ssid, netplan_id, strlen(previous_filename) - 1);
+    if (netplan_id_size > 0) {
         _LOGI ("deleting netplan connection: %s", netplan_id);
         netplan_delete_connection(netplan_id, NULL);
-        generate_netplan(NULL);
+        netplan_generate(NULL);
         _fix_netplan_interface_name(NULL);
     }
 
