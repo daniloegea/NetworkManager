@@ -401,7 +401,6 @@ nms_keyfile_utils_check_file_permissions(NMSKeyfileFiletype filetype,
     return TRUE;
 }
 
-
 gboolean
 generate_netplan(const char* rootdir)
 {
@@ -415,5 +414,5 @@ generate_netplan(const char* rootdir)
         argv[3] = rootdir;
     }
     return g_spawn_sync(NULL, (gchar**)argv, NULL, G_SPAWN_SEARCH_PATH,
-            NULL, NULL, NULL, NULL, NULL, NULL);
+                        NULL, NULL, NULL, NULL, NULL, NULL);
 }
