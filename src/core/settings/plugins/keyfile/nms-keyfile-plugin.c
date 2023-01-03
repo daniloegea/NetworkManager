@@ -589,8 +589,7 @@ reload_connections(NMSettingsPlugin                      *plugin,
         NM_SETT_UTIL_STORAGES_INIT(storages_new, nms_keyfile_storage_destroy);
     int i;
 
-    netplan_generate(NULL);
-    _fix_netplan_interface_name(NULL);
+    generate_netplan(NULL);
     _load_dir(self, NMS_KEYFILE_STORAGE_TYPE_RUN, priv->dirname_run, &storages_new);
     if (priv->dirname_etc)
         _load_dir(self, NMS_KEYFILE_STORAGE_TYPE_ETC, priv->dirname_etc, &storages_new);
@@ -1055,8 +1054,7 @@ delete_connection(NMSettingsPlugin *plugin, NMSettingsStorage *storage_x, GError
     if (netplan_id_size > 0) {
         _LOGI ("deleting netplan connection: %s", netplan_id);
         netplan_delete_connection(netplan_id, NULL);
-        netplan_generate(NULL);
-        _fix_netplan_interface_name(NULL);
+        generate_netplan(NULL);
     }
 
     _LOGT("commit: deleted \"%s\", %s %s (%s%s%s%s)",

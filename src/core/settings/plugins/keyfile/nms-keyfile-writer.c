@@ -498,12 +498,11 @@ _internal_write_connection(NMConnection                   *connection,
         /* Clear original keyfile in /etc/NetworkManager/system-connections/,
          * we've written the /etc/netplan/*.yaml file instead. */
         unlink(path);
-        if (!netplan_generate(rootdir)) {
+        if (!generate_netplan(rootdir)) {
             g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
                          "netplan generate failed");
             return FALSE;
         }
-        _fix_netplan_interface_name(rootdir);
         //XXX: path should be provided by netplan eventually
         g_free(path);
         if (existing_path) {
