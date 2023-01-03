@@ -420,12 +420,12 @@ _internal_write_connection(NMConnection                   *connection,
         g_autofree gchar *escaped_ssid = ssid ?
                                          g_uri_escape_string(ssid, NULL, TRUE) : NULL;
         g_autofree gchar *netplan_id = NULL;
+        g_autofree gchar *actual_netplan_id = NULL;
         ssize_t netplan_id_size = 0;
-        NetplanNetDefinition *netdef_id = NULL;
+        NetplanNetDefinition *netdef = NULL;
         NetplanParser *npp = NULL;
         NetplanState *np_state = NULL;
-        const char *ifname = NULL;
-        const char *actual_netplan_id = NULL;
+        NetplanStateIterator state_iter;
         const gchar* kf_path = path;
 
         if (existing_path && strstr(existing_path, "system-connections/netplan-")) {
@@ -444,11 +444,6 @@ _internal_write_connection(NMConnection                   *connection,
             kf_path = existing_path;
         }
 
-        if (!netplan_id) {
-            const char *con_uuid = nm_connection_get_uuid(connection);
-            ifname = nm_connection_get_interface_name(connection);
-            netplan_id = g_strdup_printf("NM-%s", con_uuid);
-        }
         // push keyfile into libnetplan for parsing (using existing_path, if available,
         // to be able to extract the original netdef_id and override existing settings)
         npp = netplan_parser_new();
@@ -462,27 +457,31 @@ _internal_write_connection(NMConnection                   *connection,
 
         np_state = netplan_state_new();
         netplan_state_import_parser_results(np_state, npp, &local_err);
-        netdef_id = netplan_state_get_netdef(np_state, netplan_id);
-        actual_netplan_id = netplan_id;
-        if (!netdef_id) {
-            /* If we can't find a netdef using the NM-uuid netplan_id we try the interface name
-             * XXX: It might be a good idea to have an iterator API so we could just get the
-             * first netdef instead of trying to find it.
-             */
-            netdef_id = netplan_state_get_netdef(np_state, ifname);
-            actual_netplan_id = ifname;
-        }
 
-        if (netdef_id) {
-            netplan_netdef_write_yaml(np_state, netdef_id, rootdir, &local_err);
-        } else {
+        netplan_state_iterator_init(np_state, &state_iter);
+        /* At this point we have a single netdef in the netplan state */
+        netdef = netplan_state_iterator_next(&state_iter);
+
+        if (!netdef) {
             g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
-                         "netplan: netdef ID \"%s\" was not found in the Netplan state",
-                         netplan_id);
+                         "netplan: Netplan state has no network definitions");
             netplan_state_clear(&np_state);
             netplan_parser_clear(&npp);
             return FALSE;
         }
+
+        actual_netplan_id = g_malloc0(strlen(kf_path));
+        netplan_id_size = netplan_netdef_get_id(netdef, actual_netplan_id, strlen(kf_path) - 1);
+
+        if (netplan_id_size <= 0) {
+            g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
+                         "netplan: Failed to get the ID from the network definition");
+            netplan_state_clear(&np_state);
+            netplan_parser_clear(&npp);
+            return FALSE;
+        }
+
+        netplan_netdef_write_yaml(np_state, netdef, rootdir, &local_err);
 
         netplan_state_clear(&np_state);
         netplan_parser_clear(&npp);
