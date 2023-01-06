@@ -503,8 +503,6 @@ _internal_write_connection(NMConnection                   *connection,
             ssize_t path_size = strlen(path) + strlen(nm_connection_get_uuid(connection)) + IF_NAMESIZE + 1;
             if (escaped_ssid)
                 path_size += strlen(escaped_ssid);
-            if (rootdir)
-                path_size += strlen(rootdir);
 
             g_free(path);
             path = g_malloc0(path_size);
@@ -514,6 +512,12 @@ _internal_write_connection(NMConnection                   *connection,
                 g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
                         "netplan: couldn't determine the keyfile path");
                 goto netplan_error;
+            }
+
+            if (rootdir) {
+                char* final_path = g_build_path(G_DIR_SEPARATOR_S, rootdir, path, NULL);
+                g_free(path);
+                path = final_path;
             }
         }
 
