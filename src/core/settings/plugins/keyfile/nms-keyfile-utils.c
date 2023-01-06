@@ -9,7 +9,6 @@
 
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <glob.h>
 
 #include "libnm-glib-aux/nm-uuid.h"
 #include "libnm-glib-aux/nm-io-utils.h"
