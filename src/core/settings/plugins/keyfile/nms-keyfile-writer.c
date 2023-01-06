@@ -10,6 +10,7 @@
 
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <net/if.h>
 #include <unistd.h>
 #include <netplan/parse.h>
 #include <netplan/parse-nm.h>
@@ -220,6 +221,8 @@ _internal_write_connection(NMConnection                   *connection,
     int                             i_path;
     gs_unref_object NMConnection   *reread      = NULL;
     gboolean                        reread_same = FALSE;
+    NetplanParser                  *npp         = NULL;
+    NetplanState                   *np_state    = NULL;
 
     g_return_val_if_fail(!out_path || !*out_path, FALSE);
     g_return_val_if_fail(keyfile_dir && keyfile_dir[0] == '/', FALSE);
@@ -420,11 +423,8 @@ _internal_write_connection(NMConnection                   *connection,
         g_autofree gchar *escaped_ssid = ssid ?
                                          g_uri_escape_string(ssid, NULL, TRUE) : NULL;
         g_autofree gchar *netplan_id = NULL;
-        g_autofree gchar *actual_netplan_id = NULL;
         ssize_t netplan_id_size = 0;
         NetplanNetDefinition *netdef = NULL;
-        NetplanParser *npp = NULL;
-        NetplanState *np_state = NULL;
         NetplanStateIterator state_iter;
         const gchar* kf_path = path;
 
@@ -450,13 +450,16 @@ _internal_write_connection(NMConnection                   *connection,
 
         if (!netplan_parser_load_keyfile(npp, kf_path, &local_err)) {
             g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
-                         "netplan: YAML translation failed");
-            netplan_parser_clear(&npp);
-            return FALSE;
+                         "netplan: YAML translation failed: %s", local_err->message);
+            goto netplan_parser_error;
         }
 
         np_state = netplan_state_new();
-        netplan_state_import_parser_results(np_state, npp, &local_err);
+        if (!netplan_state_import_parser_results(np_state, npp, &local_err)) {
+            g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
+                         "netplan: YAML validation failed: %s", local_err->message);
+            goto netplan_error;
+        }
 
         netplan_state_iterator_init(np_state, &state_iter);
         /* At this point we have a single netdef in the netplan state */
@@ -465,26 +468,14 @@ _internal_write_connection(NMConnection                   *connection,
         if (!netdef) {
             g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
                          "netplan: Netplan state has no network definitions");
-            netplan_state_clear(&np_state);
-            netplan_parser_clear(&npp);
-            return FALSE;
+            goto netplan_error;
         }
 
-        actual_netplan_id = g_malloc0(strlen(kf_path));
-        netplan_id_size = netplan_netdef_get_id(netdef, actual_netplan_id, strlen(kf_path) - 1);
-
-        if (netplan_id_size <= 0) {
+        if (!netplan_netdef_write_yaml(np_state, netdef, rootdir, &local_err)) {
             g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
-                         "netplan: Failed to get the ID from the network definition");
-            netplan_state_clear(&np_state);
-            netplan_parser_clear(&npp);
-            return FALSE;
+                         "netplan: Failed to generate YAML: %s", local_err->message);
+            goto netplan_error;
         }
-
-        netplan_netdef_write_yaml(np_state, netdef, rootdir, &local_err);
-
-        netplan_state_clear(&np_state);
-        netplan_parser_clear(&npp);
 
         /* Delete same connection-profile provided by legacy netplan plugin */
         g_autofree gchar* legacy_path = NULL;
@@ -500,33 +491,34 @@ _internal_write_connection(NMConnection                   *connection,
         if (!generate_netplan(rootdir)) {
             g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
                          "netplan generate failed");
-            return FALSE;
+            goto netplan_error;
         }
-        //XXX: path should be provided by netplan eventually
-        g_free(path);
         if (existing_path) {
             // This is an update of an existing connection
+            g_free(path);
             path = g_strdup(existing_path);
         } else {
             // This will add a new connection
+            // Calculating the maximum space needed to store the new keyfile path
+            ssize_t path_size = strlen(path) + strlen(nm_connection_get_uuid(connection)) + IF_NAMESIZE + 1;
             if (escaped_ssid)
-                path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-NM-%s-%s.nmconnection",
-                                       rootdir ?: "", nm_connection_get_uuid (connection), escaped_ssid);
-            else
-                path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-NM-%s.nmconnection",
-                                       rootdir ?: "", nm_connection_get_uuid (connection));
+                path_size += strlen(escaped_ssid);
+            if (rootdir)
+                path_size += strlen(rootdir);
 
-            // Since netplan v0.103 logical interfaces (bridge/bond/vlan/...) use the interface name as ID
-            if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
-                g_free(path);
-                if (escaped_ssid)
-                    path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-%s-%s.nmconnection",
-                                           rootdir ?: "", actual_netplan_id, escaped_ssid);
-                else
-                    path = g_strdup_printf("%s/run/NetworkManager/system-connections/netplan-%s.nmconnection",
-                                           rootdir ?: "", actual_netplan_id);
+            g_free(path);
+            path = g_malloc0(path_size);
+            path_size = netplan_netdef_get_output_filename(netdef, ssid, path, path_size);
+
+            if (path_size <= 0) {
+                g_set_error (error, NM_SETTINGS_ERROR, NM_SETTINGS_ERROR_FAILED,
+                        "netplan: couldn't determine the keyfile path");
+                goto netplan_error;
             }
         }
+
+        netplan_state_clear(&np_state);
+        netplan_parser_clear(&npp);
 
         /* re-read again: this time the connection profile newly generated by netplan in /run/... */
         if (   out_reread
@@ -566,6 +558,12 @@ _internal_write_connection(NMConnection                   *connection,
     NM_SET_OUT(out_path, g_steal_pointer(&path));
 
     return TRUE;
+
+netplan_error:
+    netplan_state_clear(&np_state);
+netplan_parser_error:
+    netplan_parser_clear(&npp);
+    return FALSE;
 }
 
 gboolean
