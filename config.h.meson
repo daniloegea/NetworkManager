@@ -271,3 +271,5 @@
 /* Define to 1 if you have history support from -lreadline. */
 #mesondefine HAVE_READLINE_HISTORY
 
+/* Define to 1 to enable integration with Netplan */
+#mesondefine WITH_NETPLAN
